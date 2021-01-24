@@ -32,6 +32,87 @@ CREATE TABLE [dbo].[fct_rating$](
 	[rating] [nvarchar](255) NULL
 );
 
+-----------------------------------------------------------------------------------------------------------------------------------------------
+
+--Ratio of the customers placing another order within 45 days after an order they left positive feedback for by the total orders in the table.
+
+/*
+CTE
+‚Ä¢ Assuming no duplicates and null values
+‚Ä¢ cte query ‚Äúnxt_order‚Äù: To calculate the days between created_at and next order date per customer_id
+‚Ä¢ Lead function to get next order date of customer_id
+‚Ä¢ Datediff to find the days between created_at date and next order date
+‚Ä¢ Left join to consider all orders from fct_orders$
+‚Ä¢ Filtered to non-cancelled orders and year 2019
+Main Query:
+‚Ä¢ To calculate percentage of all orders where the days between created_at and next order_date is less than 45 and rating is positive to the total number of orders
+*/
+
+with nxt_order as (Select customer_id, rating, DATEDIFF(DD,created_at, lead(order_date)over(partition by customer_id order by order_date)) as days_nxt_order
+from fct_orders$ as o
+Left join fct_rating$ as r
+on o.order_id = r.order_id
+where is_canceled = 'FALSE' and year(order_date) = 2019
+)
+Select (COUNT(*)*100.0/(Select COUNT(*) from nxt_order)) as positive_feedback_45d_return
+from nxt_order
+where days_nxt_order <=45 and rating = 'POSITIVE'
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+--The count of customers who used only android for all their orders in the year 2017
+
+
+/*
+Cte:
+‚Ä¢ Assuming no duplicates and null values
+‚Ä¢ case statement to check if customer_id used android and return 1 if true in column ‚Äúonly_android‚Äù
+‚Ä¢ cte query ‚Äúandroid_count‚Äù: Will have column only_android and total_count per customer_id and is filtered to year 2017 and not cancelled orders
+Main Query:
+‚Ä¢ Inner query will sum the only_android column grouped by customer_id and total_order
+‚Ä¢ Having clause filters the customers_id where the total_order equal to total_android to check if the total orders per customer is equal to the total number of android orders
+‚Ä¢ Outer query counts the total customers
+*/
+
+
+with android_count as (Select customer_id, platform_name, (case when platform_name = 'android' then 1 else 0 end) as only_android, COUNT(*)over(PARTITION by customer_id) as total_order
+from fct_orders$ as o
+join dim_platform$ as p
+on o.platform_id = p.platform_id
+where YEAR(order_date) = 2017 and is_canceled = 'FALSE')
+
+Select COUNT(*) as customers from(
+Select customer_id, SUM(only_android) as total_android, total_order from android_count
+group by customer_id, total_order
+having SUM(only_android) = total_order
+) as inner_query
+------------------------------------------------------------------------------------------------------------------------------------------------
+
+--To find the customer that spent the most money only in the 5th largest city (largest as in total number of orders in whole 2018)
+
+/*
+‚Ä¢ Assuming no duplicates and null values
+‚Ä¢ Dense rank will rank the city on total orders
+‚Ä¢ City with 5th largest order will be filtered
+‚Ä¢ Sum by paid amount and partition will find the total order value per customer_id
+‚Ä¢ Ordered by total_paid_eur desc and top 1 to select the highest customer_id by spend value
+*/
+
+Select Top 1 customer_id, city, SUM(paid_amount)over(partition by customer_id) as total_paid_eur
+from fct_orders$ as o
+join dim_restaurant$ as r
+on o.restaurant_id = r.restaurant_id
+where city = (
+Select city from
+(Select city, DENSE_RANK() OVER( order by count(city) desc) as rank
+from fct_orders$ as o
+join dim_restaurant$ as r
+on o.restaurant_id = r.restaurant_id
+where is_canceled = 'FALSE' and YEAR(order_date) = 2018
+group by city) as city_rank
+where rank =5)
+order by 3 desc
+
+
 ---------------------------------------------------------------------------------------------------------------------------------------------
 
 
@@ -39,16 +120,16 @@ CREATE TABLE [dbo].[fct_rating$](
 --who used the same consecutive payment method as the previous payment method divided by the total previous payment method
 /*
 CTE:
-ï Assuming no duplicates and null values
-ï Filter is applied to not cancelled orders and fetched date since 2018
-ï Query ìnxt_pymnt_methodî: To calculate the next payment method I used lead function on payment_method partition by customer_id
-ï Query ìcustomer_payment_countî: I am fetching the customer_id with consecutive same payment method and who has more than 2 orders.
+‚Ä¢ Assuming no duplicates and null values
+‚Ä¢ Filter is applied to not cancelled orders and fetched date since 2018
+‚Ä¢ Query ‚Äúnxt_pymnt_method‚Äù: To calculate the next payment method I used lead function on payment_method partition by customer_id
+‚Ä¢ Query ‚Äúcustomer_payment_count‚Äù: I am fetching the customer_id with consecutive same payment method and who has more than 2 orders.
 To extract same consecutive payment, I am applying the where clause
 payment_method = next_payment
-ï Rank function is performed to avoid duplicates while calculating the percentage of customer for a particular payment method.
-ï Sum the rank to get the total number of customers for a particular payment method
+‚Ä¢ Rank function is performed to avoid duplicates while calculating the percentage of customer for a particular payment method.
+‚Ä¢ Sum the rank to get the total number of customers for a particular payment method
 Main Query:
-ï To calculate the percentage of customer who used consecutive same payment method ie the percentage of customers who used the same payment method for their second order, split by the first payment method, I applied the below formula:
+‚Ä¢ To calculate the percentage of customer who used consecutive same payment method ie the percentage of customers who used the same payment method for their second order, split by the first payment method, I applied the below formula:
 sum of customers having same consecutive payment method *100.0 / sum of first payment method
 */
 
@@ -77,68 +158,14 @@ group by payment_method) as dd
 on cte.payment_method = dd.payment_method
 
 
-------------------------------------------------------------------------------------------------------------------------------------------------
-
---To find the customer that spent the most money only in the 5th largest city (largest as in total number of orders in whole 2018)
-
-/*
-ï Assuming no duplicates and null values
-ï Dense rank will rank the city on total orders
-ï City with 5th largest order will be filtered
-ï Sum by paid amount and partition will find the total order value per customer_id
-ï Ordered by total_paid_eur desc and top 1 to select the highest customer_id by spend value
-*/
-
-Select Top 1 customer_id, city, SUM(paid_amount)over(partition by customer_id) as total_paid_eur
-from fct_orders$ as o
-join dim_restaurant$ as r
-on o.restaurant_id = r.restaurant_id
-where city = (
-Select city from
-(Select city, DENSE_RANK() OVER( order by count(city) desc) as rank
-from fct_orders$ as o
-join dim_restaurant$ as r
-on o.restaurant_id = r.restaurant_id
-where is_canceled = 'FALSE' and YEAR(order_date) = 2018
-group by city) as city_rank
-where rank =5)
-order by 3 desc
-
-
------------------------------------------------------------------------------------------------------------------------------------------------
-
---Ratio of the customers placing another order within 45 days after an order they left positive feedback for by the total orders in the table.
-
-/*
-CTE
-ï Assuming no duplicates and null values
-ï cte query ìnxt_orderî: To calculate the days between created_at and next order date per customer_id
-ï Lead function to get next order date of customer_id
-ï Datediff to find the days between created_at date and next order date
-ï Left join to consider all orders from fct_orders$
-ï Filtered to non-cancelled orders and year 2019
-Main Query:
-ï To calculate percentage of all orders where the days between created_at and next order_date is less than 45 and rating is positive to the total number of orders
-*/
-
-with nxt_order as (Select customer_id, rating, DATEDIFF(DD,created_at, lead(order_date)over(partition by customer_id order by order_date)) as days_nxt_order
-from fct_orders$ as o
-Left join fct_rating$ as r
-on o.order_id = r.order_id
-where is_canceled = 'FALSE' and year(order_date) = 2019
-)
-Select (COUNT(*)*100.0/(Select COUNT(*) from nxt_order)) as positive_feedback_45d_return
-from nxt_order
-where days_nxt_order <=45 and rating = 'POSITIVE'
-
 
 --------------------------------------------------------------------------------------------------------------------------------------------------
---From 2017 till today, count of distinct customers for every month in each restaurant for the city ìkrakowî
+--From 2017 till today, count of distinct customers for every month in each restaurant for the city ‚Äúkrakow‚Äù
 
 /*
-ï Datename to get name of order month
-ï Filtered to city 'innsbruck' and order date from 2017 to today
-ï Grouping on month and restaurant_id and distinct customer_id will fetch unique customer_id
+‚Ä¢ Datename to get name of order month
+‚Ä¢ Filtered to city 'innsbruck' and order date from 2017 to today
+‚Ä¢ Grouping on month and restaurant_id and distinct customer_id will fetch unique customer_id
 */
 
 Select datename(MM, order_date) as 'month', o.restaurant_id, count(Distinct customer_id) as customers
@@ -149,30 +176,4 @@ where city = 'krakow' and order_date between '2017-01-01' and GETDATE() and is_c
 group by datename(MM, order_date), o.restaurant_id;
 
 
------------------------------------------------------------------------------------------------------------------------------------------------------
---The count of customers who used only android for all their orders in the year 2017
 
-
-/*
-Cte:
-ï Assuming no duplicates and null values
-ï case statement to check if customer_id used android and return 1 if true in column ìonly_androidî
-ï cte query ìandroid_countî: Will have column only_android and total_count per customer_id and is filtered to year 2017 and not cancelled orders
-Main Query:
-ï Inner query will sum the only_android column grouped by customer_id and total_order
-ï Having clause filters the customers_id where the total_order equal to total_android to check if the total orders per customer is equal to the total number of android orders
-ï Outer query counts the total customers
-*/
-
-
-with android_count as (Select customer_id, platform_name, (case when platform_name = 'android' then 1 else 0 end) as only_android, COUNT(*)over(PARTITION by customer_id) as total_order
-from fct_orders$ as o
-join dim_platform$ as p
-on o.platform_id = p.platform_id
-where YEAR(order_date) = 2017 and is_canceled = 'FALSE')
-
-Select COUNT(*) as customers from(
-Select customer_id, SUM(only_android) as total_android, total_order from android_count
-group by customer_id, total_order
-having SUM(only_android) = total_order
-) as inner_query
